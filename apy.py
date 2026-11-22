@@ -42,11 +42,16 @@ if "messages" not in st.session_state:
 with st.sidebar:
     st.header("🎓 BAÜN Asistan Ayarları")
     
-    # Streamlit Secrets varsa otomatik alır, yoksa kullanıcıdan ister
-    if "GEMINI_API_KEY" in st.secrets:
-        api_key = st.secrets["GEMINI_API_KEY"]
-        st.success("API Anahtarı sistemden yüklendi.")
-    else:
+    # Streamlit Secrets varsa güvenli şekilde alır, yoksa kullanıcıdan ister
+    api_key = ""
+    try:
+        if "GEMINI_API_KEY" in st.secrets:
+            api_key = st.secrets["GEMINI_API_KEY"]
+            st.success("API Anahtarı sistemden yüklendi.")
+    except Exception:
+        pass
+
+    if not api_key:
         api_key = st.text_input("Gemini API Key Giriniz:", type="password")
         st.caption("API anahtarınızı Google AI Studio'dan ücretsiz alabilirsiniz.")
 
@@ -83,4 +88,70 @@ if prompt := st.chat_input("Örn: 2026-2027 güz dönemi akademik takvimi ne zam
 
     # 2. Günlük Limit Kontrolü
     if st.session_state.question_count >= DAILY_LIMIT:
-        st.warning("🚫 Bugünkü 3 soru hakkınızı doldurdunuz
+        st.warning("🚫 Bugünkü 3 soru hakkınızı doldurdunuz. Yarın tekrar soru sorabilirsiniz.")
+        st.stop()
+
+    # Kullanıcı mesajını ekle ve göster
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    # Asistan yanıtını oluştur
+    with st.chat_message("assistant"):
+        with st.spinner("BAÜN kaynakları ve web taranıyor..."):
+            try:
+                client = genai.Client(api_key=api_key)
+
+                # Sohbet geçmişini Gemini formatına dönüştür (Son 6 mesaj)
+                chat_history = []
+                for m in st.session_state.messages[-6:]:
+                    role = "user" if m["role"] == "user" else "model"
+                    chat_history.append(
+                        types.Content(
+                            role=role,
+                            parts=[types.Part.from_text(text=m["content"])]
+                        )
+                    )
+
+                # Google Search Grounding ve Düşük Temperature (Sallamayı önlemek için 0.1)
+                config = types.GenerateContentConfig(
+                    system_instruction=SYSTEM_INSTRUCTION,
+                    temperature=0.1,
+                    tools=[{"google_search": {}}]
+                )
+
+                response = client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=chat_history,
+                    config=config
+                )
+
+                answer_text = response.text
+
+                # Eğer web araması yapıldıysa kaynak linklerini altına ekle
+                grounding_chunks = None
+                if (response.candidates and 
+                    response.candidates[0].grounding_metadata and 
+                    response.candidates[0].grounding_metadata.grounding_chunks):
+                    grounding_chunks = response.candidates[0].grounding_metadata.grounding_chunks
+
+                if grounding_chunks:
+                    sources = []
+                    for chunk in grounding_chunks:
+                        if chunk.web and chunk.web.uri and chunk.web.title:
+                            sources.append(f"- [{chunk.web.title}]({chunk.web.uri})")
+                    if sources:
+                        unique_sources = list(dict.fromkeys(sources))
+                        answer_text += "\n\n**📚 Yararlanılan Kaynaklar:**\n" + "\n".join(unique_sources[:3])
+
+                st.markdown(answer_text)
+                
+                # Başarılı yanıttan sonra soru hakkını düş ve mesajı kaydet
+                st.session_state.question_count += 1
+                st.session_state.messages.append({"role": "assistant", "content": answer_text})
+                
+                # Yan menüdeki sayacın anında güncellenmesi için
+                st.rerun()
+
+            except Exception as e:
+                st.error(f"Bir hata oluştu: {str(e)}\n\nLütfen API anahtarınızı ve internet bağlantınızı kontrol edin.")
