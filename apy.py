@@ -46,13 +46,14 @@ with st.sidebar:
     api_key = ""
     try:
         if "GEMINI_API_KEY" in st.secrets:
-            api_key = st.secrets["GEMINI_API_KEY"]
+            api_key = str(st.secrets["GEMINI_API_KEY"]).strip()
             st.success("API Anahtarı sistemden yüklendi.")
     except Exception:
         pass
 
     if not api_key:
-        api_key = st.text_input("Gemini API Key Giriniz:", type="password")
+        raw_key = st.text_input("Gemini API Key Giriniz:", type="password")
+        api_key = raw_key.strip() if raw_key else ""
         st.caption("API anahtarınızı Google AI Studio'dan ücretsiz alabilirsiniz.")
 
     st.divider()
@@ -117,11 +118,11 @@ if prompt := st.chat_input("Örn: 2026-2027 güz dönemi akademik takvimi ne zam
                 config = types.GenerateContentConfig(
                     system_instruction=SYSTEM_INSTRUCTION,
                     temperature=0.1,
-                    tools=[{"google_search": {}}]
+                    tools=[types.Tool(google_search=types.GoogleSearch())]
                 )
 
                 response = client.models.generate_content(
-                    model="gemini-2.5-flash",
+                    model="gemini-flash-latest",
                     contents=chat_history,
                     config=config
                 )
