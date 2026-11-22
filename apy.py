@@ -9,16 +9,15 @@ st.set_page_config(
     layout="centered"
 )
 
-# --- SİSTEM TALİMATI ---
+# --- SİSTEM TALİMATI (HALÜSİNASYON ENGELLEME & ROL TANIMI) ---
 SYSTEM_INSTRUCTION = """
 Sen Balıkesir Üniversitesi (BAÜN) öğrencileri için geliştirilmiş resmi olmayan, yardımsever ve güvenilir bir yapay zeka öğrenci asistanısın.
-Görevin; BAÜN bölümleri, akademik takvim, öğretim görevlileri, kampüs olanakları (Çağış Kampüsü, Balıkesir MYO vb.), öğrenci işleri ve üniversite duyuruları hakkında doğru bilgi vermektir.
+Görevin; BAÜN bölümleri, akademik yapı, kampüs olanakları (Çağış Kampüsü, Balıkesir MYO vb.), öğrenci işleri süreçleri ve genel üniversite rehberliği hakkında doğru bilgi vermektir.
 
 KESİN KURALLAR:
-1. ASLA UYDURMA (SALLAMA): Emin olmadığın, web aramasında güncel ve doğrulanabilir bir karşılığını bulamadığın hiçbir bilgiyi uydurma.
-2. BİLMİYORSAN NET SÖYLE: Bilgiye ulaşamıyorsan "Bu konuda güncel ve kesin bir bilgiye ulaşamadım. Yanlış yönlendirmemek adına Balıkesir Üniversitesi resmi web sitesini (balikesir.edu.tr) kontrol etmeni öneririm." de.
-3. WEB ARAMASINI KULLAN: Akademik takvim, duyurular ve akademisyenler için web araması yaparak güncel verileri doğrula.
-4. ÜSLUP: Öğrenci dostu, net ve kibar Türkçe yanıtlar ver.
+1. ASLA UYDURMA (SALLAMA): Emin olmadığın, kendi eğitim verinde kesin olarak bulunmayan hiçbir tarihi, akademisyen ismini veya duyuruyu uydurma. Tahmin yürütme.
+2. BİLMİYORSAN NET SÖYLE: Güncel akademik takvim tarihleri, anlık duyurular veya bilmediğin detaylar sorulursa; "Bu konuda kesin veya güncel bir bilgiye sahip değilim. Yanlış yönlendirmemek adına Balıkesir Üniversitesi resmi web sitesini (balikesir.edu.tr) veya ilgili birimin duyurular sayfasını kontrol etmeni öneririm." şeklinde dürüstçe cevap ver.
+3. ÜSLUP: Öğrenci dostu, net, kibar ve Türkçe dil kurallarına uygun yanıtlar ver. Gereksiz uzun giriş cümlelerinden kaçın, doğrudan bilgiyi sun.
 """
 
 # --- GÜNLÜK LİMİT ---
@@ -33,7 +32,7 @@ if "messages" not in st.session_state:
     st.session_state.messages = [
         {
             "role": "assistant",
-            "content": "Merhaba! Ben BAÜN Öğrenci Asistanı. Bölümler, akademik takvim, öğretim görevlileri veya kampüs hakkında merak ettiklerini sorabilirsin. (Bugün kalan soru hakkın: 3)"
+            "content": "Merhaba! Ben BAÜN Öğrenci Asistanı. Bölümler, kampüs yaşamı, öğrenci işleri veya üniversite hakkında merak ettiklerini sorabilirsin. (Bugün kalan soru hakkın: 3)"
         }
     ]
 
@@ -68,16 +67,14 @@ with st.sidebar:
 
 # --- ANA EKRAN ---
 st.title("🎓 BAÜN Öğrenci Asistanı")
-st.caption("Balıkesir Üniversitesi Bilgi Sistemi • Web Arama Destekli • Halüsinasyon Korumalı")
+st.caption("Balıkesir Üniversitesi Bilgi Sistemi • Halüsinasyon Korumalı")
 
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# --- API ÇAĞRISI ---
+# --- API ÇAĞRISI (WEB ARAMASIZ - DOĞRUDAN YANIT) ---
 def ask_gemini(api_key, messages):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
-    
     contents = []
     for m in messages[-6:]:
         role = "user" if m["role"] == "user" else "model"
@@ -86,40 +83,29 @@ def ask_gemini(api_key, messages):
     payload = {
         "system_instruction": {"parts": [{"text": SYSTEM_INSTRUCTION}]},
         "contents": contents,
-        "tools": [{"google_search": {}}],
         "generationConfig": {"temperature": 0.1}
     }
 
-    res = requests.post(url, json=payload, timeout=30)
-    
-    # Eğer gemini-2.5-flash 404 verirse otomatik gemini-2.0-flash dener
-    if res.status_code == 404:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
+    # Sırasıyla kararlı modelleri dener
+    models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+    last_response = None
+
+    for model_name in models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
         res = requests.post(url, json=payload, timeout=30)
+        last_response = res
+        if res.status_code == 200:
+            data = res.json()
+            return data["candidates"][0]["content"]["parts"][0]["text"]
+        elif res.status_code == 404:
+            continue
+        else:
+            break
 
-    if res.status_code != 200:
-        raise Exception(f"Hata Kodu {res.status_code}: {res.text}")
-
-    data = res.json()
-    candidate = data["candidates"][0]
-    answer_text = candidate["content"]["parts"][0]["text"]
-
-    # Web arama kaynaklarını ekle
-    chunks = candidate.get("groundingMetadata", {}).get("groundingChunks", [])
-    sources = []
-    for chunk in chunks:
-        web = chunk.get("web", {})
-        if web.get("uri") and web.get("title"):
-            sources.append(f"- [{web['title']}]({web['uri']})")
-            
-    if sources:
-        unique_sources = list(dict.fromkeys(sources))
-        answer_text += "\n\n**📚 Yararlanılan Kaynaklar:**\n" + "\n".join(unique_sources[:3])
-
-    return answer_text
+    raise Exception(f"Hata Kodu {last_response.status_code}: {last_response.text}")
 
 # --- KULLANICI GİRDİSİ ---
-if prompt := st.chat_input("Örn: 2026-2027 güz dönemi akademik takvimi ne zaman başlıyor?"):
+if prompt := st.chat_input("Örn: Çağış kampüsünde hangi fakülteler var?"):
     if not api_key:
         st.error("Lütfen sol menüden geçerli bir Gemini API Anahtarı girin.")
         st.stop()
@@ -133,7 +119,7 @@ if prompt := st.chat_input("Örn: 2026-2027 güz dönemi akademik takvimi ne zam
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        with st.spinner("BAÜN kaynakları ve web taranıyor..."):
+        with st.spinner("Yanıt hazırlanıyor..."):
             try:
                 answer_text = ask_gemini(api_key, st.session_state.messages)
                 st.markdown(answer_text)
