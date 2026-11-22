@@ -83,4 +83,4 @@ if prompt := st.chat_input("Örn: 2026-2027 güz dönemi akademik takvimi ne zam
 
     # 2. Günlük Limit Kontrolü
     if st.session_state.question_count >= DAILY_LIMIT:
-        st.warning("🚫 Bugünkü 3 soru hakkınızı doldurdunuz.
+        st.warning("🚫 Bugünkü 3 soru hakkınızı doldurdunuz
