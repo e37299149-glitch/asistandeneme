@@ -5,13 +5,14 @@ from datetime import date
 st.set_page_config(page_title="BAÜN Öğrenci Asistanı", page_icon="🎓", layout="centered")
 
 SYSTEM_INSTRUCTION = """
-Sen Balıkesir Üniversitesi (BAÜN) öğrencileri için geliştirilmiş resmi olmayan, yardımsever ve güvenilir bir yapay zeka öğrenci asistanısın.
-Görevin; BAÜN bölümleri, akademik takvim, öğretim görevlileri, kampüs olanakları (Çağış Kampüsü, Balıkesir MYO vb.), öğrenci işleri ve üniversite duyuruları hakkında doğru bilgi vermektir.
+Sen Balıkesir Üniversitesi (BAÜN) öğrencileri için geliştirilmiş güvenilir bir yapay zeka öğrenci asistanısın.
+Görevin; BAÜN bölümleri, akademik takvim, öğretim görevlileri, kampüs olanakları (Çağış Kampüsü, Balıkesir MYO vb.) ve üniversite duyuruları hakkında SADECE doğrulanmış gerçek bilgi vermektir.
 
-KESİN KURALLAR:
-1. ASLA UYDURMA (SALLAMA): Emin olmadığın, kesin olarak bilmediğin hiçbir tarihi, akademisyen ismini veya duyuruyu uydurma.
-2. BİLMİYORSAN NET SÖYLE: Güncel akademik takvim tarihleri veya bilmediğin detaylar sorulursa; "Bu konuda kesin veya güncel bir bilgiye sahip değilim. Yanlış yönlendirmemek adına Balıkesir Üniversitesi resmi web sitesini (balikesir.edu.tr) veya ilgili birimin duyurular sayfasını kontrol etmeni öneririm." de.
-3. ÜSLUP: Öğrenci dostu, net, kibar ve Türkçe yanıtlar ver.
+KESİN KURALLAR (ASLA İHLAL ETME):
+1. WEB ARAMASINI ZORUNLU KULLAN: Akademik takvim, öğretim görevlisi isimleri, bölüm dersleri ve duyurular için mutlaka Google Arama sonucundaki güncel verilere dayan.
+2. BULAMADIYSAN KESİNLİKLE UYDURMA: Web aramasında net bir sonuç bulamadıysan veya emin değilsen ASLA tahmin yürütme, isim veya tarih uydurma. Doğrudan şu cevabı ver:
+"Bu konuda güncel ve kesin bir bilgiye ulaşamadım. Yanlış bilgi vermemek adına Balıkesir Üniversitesi resmi web sitesini (balikesir.edu.tr) veya ilgili bölümün sayfasını kontrol etmeni öneririm."
+3. SADECE GERÇEKLERİ YAZ: Yorum katma, olmayan bir öğretim görevlisi veya tarih ekleme.
 """
 
 DAILY_LIMIT = 3
@@ -25,7 +26,7 @@ if "messages" not in st.session_state:
     st.session_state.messages = [
         {
             "role": "assistant",
-            "content": "Merhaba! Ben BAÜN Öğrenci Asistanı. Bölümler, kampüs yaşamı, öğrenci işleri veya üniversite hakkında merak ettiklerini sorabilirsin. (Bugün kalan soru hakkın: 3)"
+            "content": "Merhaba! Ben BAÜN Öğrenci Asistanı. Bölümler, akademik takvim, öğretim görevlileri veya kampüs hakkında merak ettiklerini sorabilirsin. (Bugün kalan soru hakkın: 3)"
         }
     ]
 
@@ -54,14 +55,14 @@ with st.sidebar:
         st.rerun()
 
 st.title("🎓 BAÜN Öğrenci Asistanı")
-st.caption("Balıkesir Üniversitesi Bilgi Sistemi • Halüsinasyon Korumalı")
+st.caption("Balıkesir Üniversitesi Bilgi Sistemi • Canlı Web Arama Destekli")
 
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-def run_chat(key, msgs):
-    # 1. Anahtarın gerçekten erişebildiği modelleri Google'dan çek
+def run_chat_with_search(key, msgs):
+    # 1. Erişilebilen modelleri çek
     r = requests.get(f"https://generativelanguage.googleapis.com/v1beta/models?key={key}", timeout=15)
     if r.status_code != 200:
         return False, f"API Anahtarı Hatası ({r.status_code}): {r.json().get('error', {}).get('message', r.text)}"
@@ -69,38 +70,58 @@ def run_chat(key, msgs):
     models = [
         m["name"] for m in r.json().get("models", [])
         if "generateContent" in m.get("supportedGenerationMethods", [])
-        and ("gemini" in m["name"] or "gemma" in m["name"])
+        and "gemini" in m["name"]
+        and "lite" not in m["name"]  # Lite modeller web araması desteklemez, eliyoruz
     ]
-    if not models:
-        return False, "Bu API anahtarına tanımlı hiçbir aktif sohbet modeli bulunamadı."
+    # 2.5 ve 2.0 flash modellerini öne al
+    models.sort(key=lambda x: (0 if "2.5-flash" in x else (1 if "2.0-flash" in x else 2), x))
 
-    # Flash modellerini en öne al
-    models.sort(key=lambda x: (0 if "flash" in x else 1, x))
-
-    # Mesajları hazırla
+    # Son mesajları hazırla
     contents = []
-    for i, m in enumerate(msgs[-6:]):
+    for m in msgs[-6:]:
         role = "user" if m["role"] == "user" else "model"
-        txt = f"{SYSTEM_INSTRUCTION}\n\nSoru: {m['content']}" if (i == 0 and role == "user") else m["content"]
-        contents.append({"role": role, "parts": [{"text": txt}]})
+        # Kullanıcının sorusuna otomatik Balıkesir Üniversitesi bağlamı ekle ki aramayı doğru yapsın
+        text = f"Balıkesir Üniversitesi (BAÜN) ile ilgili soru: {m['content']}" if role == "user" else m["content"]
+        contents.append({"role": role, "parts": [{"text": text}]})
 
-    payload = {"contents": contents, "generationConfig": {"temperature": 0.1}}
+    # Web araması açık + Temperature 0.0 (Sıfır yaratıcılık = Sıfır sallama)
+    payload_with_search = {
+        "system_instruction": {"parts": [{"text": SYSTEM_INSTRUCTION}]},
+        "contents": contents,
+        "tools": [{"google_search": {}}],
+        "generationConfig": {"temperature": 0.0}
+    }
 
-    # Çalışan ilk modelden yanıt al
-    errors = []
     for model_id in models:
         res = requests.post(
             f"https://generativelanguage.googleapis.com/v1beta/{model_id}:generateContent?key={key}",
-            json=payload,
+            json=payload_with_search,
             timeout=30
         )
         if res.status_code == 200:
-            return True, res.json()["candidates"][0]["content"]["parts"][0]["text"]
-        errors.append(f"{model_id} -> {res.status_code}")
+            data = res.json()
+            candidate = data["candidates"][0]
+            answer = candidate["content"]["parts"][0]["text"]
 
-    return False, f"Denenen modeller yanıt vermedi: {', '.join(errors)}"
+            # Web'den çekilen kaynak linklerini altına ekle (Kanıtlı bilgi)
+            chunks = candidate.get("groundingMetadata", {}).get("groundingChunks", [])
+            sources = []
+            for chunk in chunks:
+                web = chunk.get("web", {})
+                if web.get("uri") and web.get("title"):
+                    sources.append(f"- [{web['title']}]({web['uri']})")
 
-if prompt := st.chat_input("Örn: Çağış kampüsünde hangi fakülteler var?"):
+            if sources:
+                unique_sources = list(dict.fromkeys(sources))
+                answer += "\n\n**📚 Doğrulanan Web Kaynakları:**\n" + "\n".join(unique_sources[:3])
+            else:
+                answer += "\n\n*(Not: Bu yanıt için canlı web kaynağı eşleşmedi; lütfen balikesir.edu.tr üzerinden teyit edin.)*"
+
+            return True, answer
+
+    return False, "Web arama destekli model yanıt vermedi. Lütfen birkaç saniye sonra tekrar deneyin."
+
+if prompt := st.chat_input("Örn: Balıkesir Üniversitesi 2026-2027 akademik takvimi"):
     if not api_key:
         st.error("Lütfen sol menüden geçerli bir Gemini API Anahtarı girip Enter'a basın.")
         st.stop()
@@ -114,8 +135,8 @@ if prompt := st.chat_input("Örn: Çağış kampüsünde hangi fakülteler var?"
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        with st.spinner("Yanıt hazırlanıyor..."):
-            ok, result = run_chat(api_key, st.session_state.messages)
+        with st.spinner("balikesir.edu.tr ve web taranıyor..."):
+            ok, result = run_chat_with_search(api_key, st.session_state.messages)
             if ok:
                 st.markdown(result)
                 st.session_state.question_count += 1
