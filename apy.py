@@ -2,25 +2,18 @@ import streamlit as st
 import requests
 from datetime import date
 
-# --- SAYFA AYARLARI ---
-st.set_page_config(
-    page_title="BAÜN Öğrenci Asistanı",
-    page_icon="🎓",
-    layout="centered"
-)
+st.set_page_config(page_title="BAÜN Öğrenci Asistanı", page_icon="🎓", layout="centered")
 
-# --- SİSTEM TALİMATI (HALÜSİNASYON ENGELLEME & ROL TANIMI) ---
 SYSTEM_INSTRUCTION = """
 Sen Balıkesir Üniversitesi (BAÜN) öğrencileri için geliştirilmiş resmi olmayan, yardımsever ve güvenilir bir yapay zeka öğrenci asistanısın.
-Görevin; BAÜN bölümleri, akademik yapı, kampüs olanakları (Çağış Kampüsü, Balıkesir MYO vb.), öğrenci işleri süreçleri ve genel üniversite rehberliği hakkında doğru bilgi vermektir.
+Görevin; BAÜN bölümleri, akademik takvim, öğretim görevlileri, kampüs olanakları (Çağış Kampüsü, Balıkesir MYO vb.), öğrenci işleri ve üniversite duyuruları hakkında doğru bilgi vermektir.
 
 KESİN KURALLAR:
-1. ASLA UYDURMA (SALLAMA): Emin olmadığın, kendi eğitim verinde kesin olarak bulunmayan hiçbir tarihi, akademisyen ismini veya duyuruyu uydurma. Tahmin yürütme.
-2. BİLMİYORSAN NET SÖYLE: Güncel akademik takvim tarihleri, anlık duyurular veya bilmediğin detaylar sorulursa; "Bu konuda kesin veya güncel bir bilgiye sahip değilim. Yanlış yönlendirmemek adına Balıkesir Üniversitesi resmi web sitesini (balikesir.edu.tr) veya ilgili birimin duyurular sayfasını kontrol etmeni öneririm." şeklinde dürüstçe cevap ver.
-3. ÜSLUP: Öğrenci dostu, net, kibar ve Türkçe dil kurallarına uygun yanıtlar ver. Gereksiz uzun giriş cümlelerinden kaçın, doğrudan bilgiyi sun.
+1. ASLA UYDURMA (SALLAMA): Emin olmadığın, kesin olarak bilmediğin hiçbir tarihi, akademisyen ismini veya duyuruyu uydurma.
+2. BİLMİYORSAN NET SÖYLE: Güncel akademik takvim tarihleri veya bilmediğin detaylar sorulursa; "Bu konuda kesin veya güncel bir bilgiye sahip değilim. Yanlış yönlendirmemek adına Balıkesir Üniversitesi resmi web sitesini (balikesir.edu.tr) veya ilgili birimin duyurular sayfasını kontrol etmeni öneririm." de.
+3. ÜSLUP: Öğrenci dostu, net, kibar ve Türkçe yanıtlar ver.
 """
 
-# --- GÜNLÜK LİMİT ---
 DAILY_LIMIT = 3
 today_str = str(date.today())
 
@@ -36,10 +29,8 @@ if "messages" not in st.session_state:
         }
     ]
 
-# --- YAN MENÜ ---
 with st.sidebar:
     st.header("🎓 BAÜN Asistan Ayarları")
-    
     api_key = ""
     try:
         if "GEMINI_API_KEY" in st.secrets:
@@ -55,17 +46,13 @@ with st.sidebar:
     st.divider()
     remaining = max(0, DAILY_LIMIT - st.session_state.question_count)
     st.metric(label="Bugünkü Kalan Soru Hakkınız", value=f"{remaining} / {DAILY_LIMIT}")
-    
+
     if st.button("Sohbet Geçmişini Temizle"):
         st.session_state.messages = [
-            {
-                "role": "assistant",
-                "content": f"Sohbet temizlendi. Yeni sorunuzu sorabilirsiniz. (Kalan hak: {remaining})"
-            }
+            {"role": "assistant", "content": f"Sohbet temizlendi. Yeni sorunuzu sorabilirsiniz. (Kalan hak: {remaining})"}
         ]
         st.rerun()
 
-# --- ANA EKRAN ---
 st.title("🎓 BAÜN Öğrenci Asistanı")
 st.caption("Balıkesir Üniversitesi Bilgi Sistemi • Halüsinasyon Korumalı")
 
@@ -73,41 +60,49 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# --- API ÇAĞRISI (WEB ARAMASIZ - DOĞRUDAN YANIT) ---
-def ask_gemini(api_key, messages):
+def run_chat(key, msgs):
+    # 1. Anahtarın gerçekten erişebildiği modelleri Google'dan çek
+    r = requests.get(f"https://generativelanguage.googleapis.com/v1beta/models?key={key}", timeout=15)
+    if r.status_code != 200:
+        return False, f"API Anahtarı Hatası ({r.status_code}): {r.json().get('error', {}).get('message', r.text)}"
+
+    models = [
+        m["name"] for m in r.json().get("models", [])
+        if "generateContent" in m.get("supportedGenerationMethods", [])
+        and ("gemini" in m["name"] or "gemma" in m["name"])
+    ]
+    if not models:
+        return False, "Bu API anahtarına tanımlı hiçbir aktif sohbet modeli bulunamadı."
+
+    # Flash modellerini en öne al
+    models.sort(key=lambda x: (0 if "flash" in x else 1, x))
+
+    # Mesajları hazırla
     contents = []
-    for m in messages[-6:]:
+    for i, m in enumerate(msgs[-6:]):
         role = "user" if m["role"] == "user" else "model"
-        contents.append({"role": role, "parts": [{"text": m["content"]}]})
+        txt = f"{SYSTEM_INSTRUCTION}\n\nSoru: {m['content']}" if (i == 0 and role == "user") else m["content"]
+        contents.append({"role": role, "parts": [{"text": txt}]})
 
-    payload = {
-        "system_instruction": {"parts": [{"text": SYSTEM_INSTRUCTION}]},
-        "contents": contents,
-        "generationConfig": {"temperature": 0.1}
-    }
+    payload = {"contents": contents, "generationConfig": {"temperature": 0.1}}
 
-    # Sırasıyla kararlı modelleri dener
-    models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
-    last_response = None
-
-    for model_name in models:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
-        res = requests.post(url, json=payload, timeout=30)
-        last_response = res
+    # Çalışan ilk modelden yanıt al
+    errors = []
+    for model_id in models:
+        res = requests.post(
+            f"https://generativelanguage.googleapis.com/v1beta/{model_id}:generateContent?key={key}",
+            json=payload,
+            timeout=30
+        )
         if res.status_code == 200:
-            data = res.json()
-            return data["candidates"][0]["content"]["parts"][0]["text"]
-        elif res.status_code == 404:
-            continue
-        else:
-            break
+            return True, res.json()["candidates"][0]["content"]["parts"][0]["text"]
+        errors.append(f"{model_id} -> {res.status_code}")
 
-    raise Exception(f"Hata Kodu {last_response.status_code}: {last_response.text}")
+    return False, f"Denenen modeller yanıt vermedi: {', '.join(errors)}"
 
-# --- KULLANICI GİRDİSİ ---
 if prompt := st.chat_input("Örn: Çağış kampüsünde hangi fakülteler var?"):
     if not api_key:
-        st.error("Lütfen sol menüden geçerli bir Gemini API Anahtarı girin.")
+        st.error("Lütfen sol menüden geçerli bir Gemini API Anahtarı girip Enter'a basın.")
         st.stop()
 
     if st.session_state.question_count >= DAILY_LIMIT:
@@ -120,13 +115,11 @@ if prompt := st.chat_input("Örn: Çağış kampüsünde hangi fakülteler var?"
 
     with st.chat_message("assistant"):
         with st.spinner("Yanıt hazırlanıyor..."):
-            try:
-                answer_text = ask_gemini(api_key, st.session_state.messages)
-                st.markdown(answer_text)
-                
+            ok, result = run_chat(api_key, st.session_state.messages)
+            if ok:
+                st.markdown(result)
                 st.session_state.question_count += 1
-                st.session_state.messages.append({"role": "assistant", "content": answer_text})
+                st.session_state.messages.append({"role": "assistant", "content": result})
                 st.rerun()
-
-            except Exception as e:
-                st.error(f"{str(e)}")
+            else:
+                st.error(result)
