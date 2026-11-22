@@ -1,6 +1,5 @@
 import streamlit as st
-from google import genai
-from google.genai import types
+import requests
 from datetime import date
 
 # --- SAYFA AYARLARI ---
@@ -38,7 +37,7 @@ if "messages" not in st.session_state:
         }
     ]
 
-# --- YAN MENÜ (API ANAHTARI VE HAK BİLGİSİ) ---
+# --- YAN MENÜ ---
 with st.sidebar:
     st.header("🎓 BAÜN Asistan Ayarları")
     
@@ -73,106 +72,106 @@ with st.sidebar:
 st.title("🎓 BAÜN Öğrenci Asistanı")
 st.caption("Balıkesir Üniversitesi Bilgi Sistemi • Web Arama Destekli • Halüsinasyon Korumalı")
 
-# --- GEÇMİŞ MESAJLARI EKRANA YAZDIRMA ---
+# --- GEÇMİŞ MESAJLARI YAZDIRMA ---
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# --- ÇALIŞAN MODELİ OTOMATİK SEÇEN FONKSİYON ---
-def generate_with_fallback(client, chat_history, config):
-    candidate_models = [
-        "gemini-2.5-flash",
-        "gemini-2.0-flash",
-        "gemini-2.0-flash-lite",
-        "gemini-1.5-flash"
-    ]
-    last_error = None
-    for model_name in candidate_models:
-        try:
-            return client.models.generate_content(
-                model=model_name,
-                contents=chat_history,
-                config=config
-            )
-        except Exception as e:
-            last_error = e
-            # Sadece 404 (Model bulunamadı) hatasında sonraki modele geç
-            if "404" in str(e) or "NOT_FOUND" in str(e):
-                continue
-            else:
-                raise e
-    raise last_error
-
-# --- KULLANICI GİRDİSİ VE YANIT ÜRETME ---
-if prompt := st.chat_input("Örn: 2026-2027 güz dönemi akademik takvimi ne zaman başlıyor?"):
+# --- API ÇAĞRI FONKSİYONU (AKTİF MODELİ KENDİ BULUR) ---
+def ask_gemini_with_search(api_key, messages):
+    # 1. Önce API anahtarının erişebildiği aktif modelleri listeden çek
+    list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+    list_res = requests.get(list_url, timeout=15)
     
-    # 1. API Anahtarı Kontrolü
+    if list_res.status_code != 200:
+        raise Exception(f"API Anahtarı Geçersiz veya Erişim Hatası ({list_res.status_code}): {list_res.text}")
+    
+    models_data = list_res.json().get("models", [])
+    available_models = [
+        m["name"] for m in models_data 
+        if "generateContent" in m.get("supportedGenerationMethods", []) and "flash" in m["name"]
+    ]
+    
+    # Öncelik sırasına göre sırala (2.5 -> 2.0 -> diğer flash modelleri)
+    target_model = None
+    for preferred in ["models/gemini-2.5-flash", "models/gemini-2.0-flash", "models/gemini-1.5-flash"]:
+        if preferred in available_models:
+            target_model = preferred
+            break
+    if not target_model and available_models:
+        target_model = available_models[0]
+    if not target_model:
+        target_model = "models/gemini-2.0-flash"
+
+    # 2. Sohbet geçmişini hazırla
+    contents = []
+    for m in messages[-6:]:
+        role = "user" if m["role"] == "user" else "model"
+        contents.append({
+            "role": role,
+            "parts": [{"text": m["content"]}]
+        })
+
+    # 3. İstek gövdesi (Web Arama + Halüsinasyon Önleme)
+    payload = {
+        "system_instruction": {
+            "parts": [{"text": SYSTEM_INSTRUCTION}]
+        },
+        "contents": contents,
+        "tools": [{"google_search": {}}],
+        "generationConfig": {
+            "temperature": 0.1
+        }
+    }
+
+    gen_url = f"https://generativelanguage.googleapis.com/v1beta/{target_model}:generateContent?key={api_key}"
+    response = requests.post(gen_url, json=payload, timeout=30)
+    
+    if response.status_code != 200:
+        raise Exception(f"Model Hatası ({response.status_code}) - Kullanılan model: {target_model} | Detay: {response.text}")
+
+    data = response.json()
+    candidate = data["candidates"][0]
+    answer_text = candidate["content"]["parts"][0]["text"]
+
+    # Kaynak linklerini çıkar
+    grounding_meta = candidate.get("groundingMetadata", {})
+    chunks = grounding_meta.get("groundingChunks", [])
+    sources = []
+    for chunk in chunks:
+        web = chunk.get("web", {})
+        if web.get("uri") and web.get("title"):
+            sources.append(f"- [{web['title']}]({web['uri']})")
+            
+    if sources:
+        unique_sources = list(dict.fromkeys(sources))
+        answer_text += "\n\n**📚 Yararlanılan Kaynaklar:**\n" + "\n".join(unique_sources[:3])
+
+    return answer_text
+
+# --- KULLANICI GİRDİSİ ---
+if prompt := st.chat_input("Örn: 2026-2027 güz dönemi akademik takvimi ne zaman başlıyor?"):
     if not api_key:
         st.error("Lütfen sol menüden geçerli bir Gemini API Anahtarı girin.")
         st.stop()
 
-    # 2. Günlük Limit Kontrolü
     if st.session_state.question_count >= DAILY_LIMIT:
         st.warning("🚫 Bugünkü 3 soru hakkınızı doldurdunuz. Yarın tekrar soru sorabilirsiniz.")
         st.stop()
 
-    # Kullanıcı mesajını ekle ve göster
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Asistan yanıtını oluştur
     with st.chat_message("assistant"):
         with st.spinner("BAÜN kaynakları ve web taranıyor..."):
             try:
-                client = genai.Client(api_key=api_key)
-
-                # Sohbet geçmişini Gemini formatına dönüştür (Son 6 mesaj)
-                chat_history = []
-                for m in st.session_state.messages[-6:]:
-                    role = "user" if m["role"] == "user" else "model"
-                    chat_history.append(
-                        types.Content(
-                            role=role,
-                            parts=[types.Part.from_text(text=m["content"])]
-                        )
-                    )
-
-                # Google Search Grounding ve Düşük Temperature
-                config = types.GenerateContentConfig(
-                    system_instruction=SYSTEM_INSTRUCTION,
-                    temperature=0.1,
-                    tools=[types.Tool(google_search=types.GoogleSearch())]
-                )
-
-                response = generate_with_fallback(client, chat_history, config)
-
-                answer_text = response.text
-
-                # Eğer web araması yapıldıysa kaynak linklerini altına ekle
-                grounding_chunks = None
-                if (response.candidates and 
-                    response.candidates[0].grounding_metadata and 
-                    response.candidates[0].grounding_metadata.grounding_chunks):
-                    grounding_chunks = response.candidates[0].grounding_metadata.grounding_chunks
-
-                if grounding_chunks:
-                    sources = []
-                    for chunk in grounding_chunks:
-                        if chunk.web and chunk.web.uri and chunk.web.title:
-                            sources.append(f"- [{chunk.web.title}]({chunk.web.uri})")
-                    if sources:
-                        unique_sources = list(dict.fromkeys(sources))
-                        answer_text += "\n\n**📚 Yararlanılan Kaynaklar:**\n" + "\n".join(unique_sources[:3])
-
+                answer_text = ask_gemini_with_search(api_key, st.session_state.messages)
                 st.markdown(answer_text)
                 
-                # Başarılı yanıttan sonra soru hakkını düş ve mesajı kaydet
                 st.session_state.question_count += 1
                 st.session_state.messages.append({"role": "assistant", "content": answer_text})
-                
-                # Yan menüdeki sayacın anında güncellenmesi için
                 st.rerun()
 
             except Exception as e:
-                st.error(f"Bir hata oluştu: {str(e)}\n\nNot: Hata devam ederse Google AI Studio'dan yeni bir proje üzerinde yeni bir API anahtarı oluşturmayı deneyin.")
+                st.error(f"Hata Detayı:\n{str(e)}")
