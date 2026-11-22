@@ -42,7 +42,6 @@ if "messages" not in st.session_state:
 with st.sidebar:
     st.header("🎓 BAÜN Asistan Ayarları")
     
-    # Streamlit Secrets varsa güvenli şekilde alır, yoksa kullanıcıdan ister
     api_key = ""
     try:
         if "GEMINI_API_KEY" in st.secrets:
@@ -79,6 +78,31 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
+# --- ÇALIŞAN MODELİ OTOMATİK SEÇEN FONKSİYON ---
+def generate_with_fallback(client, chat_history, config):
+    candidate_models = [
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gemini-2.0-flash-lite",
+        "gemini-1.5-flash"
+    ]
+    last_error = None
+    for model_name in candidate_models:
+        try:
+            return client.models.generate_content(
+                model=model_name,
+                contents=chat_history,
+                config=config
+            )
+        except Exception as e:
+            last_error = e
+            # Sadece 404 (Model bulunamadı) hatasında sonraki modele geç
+            if "404" in str(e) or "NOT_FOUND" in str(e):
+                continue
+            else:
+                raise e
+    raise last_error
+
 # --- KULLANICI GİRDİSİ VE YANIT ÜRETME ---
 if prompt := st.chat_input("Örn: 2026-2027 güz dönemi akademik takvimi ne zaman başlıyor?"):
     
@@ -114,18 +138,14 @@ if prompt := st.chat_input("Örn: 2026-2027 güz dönemi akademik takvimi ne zam
                         )
                     )
 
-                # Google Search Grounding ve Düşük Temperature (Sallamayı önlemek için 0.1)
+                # Google Search Grounding ve Düşük Temperature
                 config = types.GenerateContentConfig(
                     system_instruction=SYSTEM_INSTRUCTION,
                     temperature=0.1,
                     tools=[types.Tool(google_search=types.GoogleSearch())]
                 )
 
-                response = client.models.generate_content(
-                    model="gemini-flash-latest",
-                    contents=chat_history,
-                    config=config
-                )
+                response = generate_with_fallback(client, chat_history, config)
 
                 answer_text = response.text
 
@@ -155,4 +175,4 @@ if prompt := st.chat_input("Örn: 2026-2027 güz dönemi akademik takvimi ne zam
                 st.rerun()
 
             except Exception as e:
-                st.error(f"Bir hata oluştu: {str(e)}\n\nLütfen API anahtarınızı ve internet bağlantınızı kontrol edin.")
+                st.error(f"Bir hata oluştu: {str(e)}\n\nNot: Hata devam ederse Google AI Studio'dan yeni bir proje üzerinde yeni bir API anahtarı oluşturmayı deneyin.")
